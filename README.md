@@ -60,6 +60,12 @@ The following options can be used to modify how the script is run:
 ./lw_aws_inventory.sh -o OrganizationAccountAccessRole
 ```
 This will leverage the OrganizationAccountAccessRole to scan all accounts in an organization.
+### Enable verbose/debug mode
+```
+./lw_aws_inventory.sh -v
+./lw_aws_inventory.sh --verbose
+```
+Shows detailed information about AWS API calls, regions being scanned, and progress.
 
 ## lw_gcp_inventory.sh
 Script for estimating license vCPUs in a GCP environment, based on folder, project or organization level. 
@@ -104,6 +110,12 @@ License Summary:
 Number of VMs, including standard GKE: 5
 vCPUs:                                 20
 ```
+### Enable verbose/debug mode
+```
+$ ./lw_gcp_inventory.sh -v
+$ ./lw_gcp_inventory.sh --verbose
+```
+Shows detailed information about GCP API calls, projects being scanned, and progress.
 
 ## lw_azure_inventory.sh
 Script for estimating license vCPUs in an Azure environment, based on folder, project or organization level. 
@@ -162,3 +174,9 @@ $ ./lw_azure_inventory.sh -s 1215ba55,72165fcf
 ```
 $ ./lw_azure_inventory.sh -m mymanagementgroup,myothermanagementgroup
 ```
+### Enable verbose/debug mode
+```
+$ ./lw_azure_inventory.sh -v
+$ ./lw_azure_inventory.sh --verbose
+```
+Shows detailed information about Azure API calls, subscriptions being scanned, and progress.
