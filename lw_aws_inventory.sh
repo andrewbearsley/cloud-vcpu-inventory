@@ -200,10 +200,12 @@ function verbose {
 
 function getAccountId {
   local profile_string=$1
-  verbose "Getting account ID using: aws $profile_string sts get-caller-identity --query \"Account\" --output text"
+  local cmd="aws $profile_string sts get-caller-identity --query \"Account\" --output text"
+  verbose "Getting account ID using: $cmd"
   if [[ $VERBOSE == "true" ]]
   then
     local account_id=$(aws $profile_string sts get-caller-identity --query "Account" --output text 2>&1)
+    verbose "Output: $account_id"
     if [[ $account_id =~ ^[0-9]{12}$ ]]
     then
       verbose "Account ID retrieved successfully: $account_id"
@@ -219,10 +221,12 @@ function getAccountId {
 
 function getRegions {
   local profile_string=$1
-  verbose "Getting regions using: aws $profile_string ec2 describe-regions --output json"
+  local cmd="aws $profile_string ec2 describe-regions --output json"
+  verbose "Getting regions using: $cmd"
   if [[ $VERBOSE == "true" ]]
   then
     local regions=$(aws $profile_string ec2 describe-regions --output json 2>&1)
+    verbose "Output: $regions"
     if [[ $regions = {* ]]
     then
       local region_count=$(echo "$regions" | jq -r '.[] | .[] | .RegionName' | wc -l | xargs)
@@ -244,6 +248,10 @@ function getEC2Instances {
   local cmd="aws $profile_string ec2 describe-instances --query 'Reservations[*].Instances[*].[InstanceId]' --filters Name=instance-state-name,Values=running --region $r --output json --no-cli-pager"
   verbose "Command: $cmd"
   local instances=$(aws $profile_string ec2 describe-instances --query 'Reservations[*].Instances[*].[InstanceId]' --filters Name=instance-state-name,Values=running --region $r --output json --no-cli-pager  2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $instances"
+  fi
   if [[ $instances = [* ]] 
   then
     local count=$(echo $instances | jq 'flatten | length')
@@ -261,13 +269,26 @@ function getEC2InstacevCPUs {
   verbose "Calculating EC2 vCPUs in region $r"
   local cmd="aws $profile_string ec2 describe-instances --query 'Reservations[*].Instances[*].[CpuOptions]' --filters Name=instance-state-name,Values=running --region $r --output json --no-cli-pager"
   verbose "Command: $cmd"
-  cpucounts=$(aws $profile_string ec2 describe-instances --query 'Reservations[*].Instances[*].[CpuOptions]' --filters Name=instance-state-name,Values=running --region $r --output json --no-cli-pager 2>&1 | jq  '.[] | .[] | .[] | .CoreCount * .ThreadsPerCore' 2>&1)
-  if [[ $VERBOSE == "true" && $? -ne 0 ]]
+  local cpu_output=$(aws $profile_string ec2 describe-instances --query 'Reservations[*].Instances[*].[CpuOptions]' --filters Name=instance-state-name,Values=running --region $r --output json --no-cli-pager 2>&1)
+  if [[ $VERBOSE == "true" ]]
   then
-    verbose "Error calculating vCPUs in region $r"
+    verbose "Output: $cpu_output"
+  fi
+  local jq_output
+  jq_output=$(echo "$cpu_output" | jq  '.[] | .[] | .[] | .CoreCount * .ThreadsPerCore' 2>&1)
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error calculating vCPUs in region $r (jq error): $jq_output"
+  fi
+  if [[ $jq_exit_code -ne 0 ]]
+  then
+    verbose "WARNING: jq failed to parse CPU options output, returning 0"
+    echo "0"
+    return
   fi
   returncount=0
-  for cpucount in $cpucounts; do
+  for cpucount in $jq_output; do
     returncount=$(($returncount + $cpucount))
   done
   verbose "Total EC2 vCPUs in region $r: $returncount"
@@ -283,15 +304,26 @@ function getECSFargateClusters {
   local clusters=$(aws $profile_string ecs list-clusters --region $r --output json --no-cli-pager 2>&1)
   if [[ $VERBOSE == "true" ]]
   then
+    verbose "Output: $clusters"
     if [[ $clusters = {* ]]
     then
-      local cluster_count=$(echo "$clusters" | jq -r '.clusterArns[]' | wc -l | xargs)
+      local cluster_count=$(echo "$clusters" | jq -r '.clusterArns[]' 2>&1 | wc -l | xargs)
       verbose "Found $cluster_count ECS clusters in region $r"
     else
       verbose "Error accessing ECS in region $r: $clusters"
     fi
   fi
-  echo "$clusters" | jq -r '.clusterArns[]'
+  local jq_output
+  jq_output=$(echo "$clusters" | jq -r '.clusterArns[]' 2>&1)
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error parsing ECS clusters output with jq: $jq_output"
+  fi
+  if [[ $jq_exit_code -eq 0 ]]
+  then
+    echo "$jq_output"
+  fi
 }
 
 function getECSFargateRunningTasks {
@@ -302,11 +334,40 @@ function getECSFargateRunningTasks {
   verbose "Scanning ECS Fargate running tasks in region $r"
   for c in $ecsfargateclusters; do
     verbose "  Checking cluster: $c"
-    allclustertasks=$(aws $profile_string ecs list-tasks --region $r --output json --cluster $c --no-cli-pager 2>&1 | jq -r '.taskArns | join(" ")')
+    local cmd="aws $profile_string ecs list-tasks --region $r --output json --cluster $c --no-cli-pager"
+    verbose "  Command: $cmd"
+    local list_output=$(aws $profile_string ecs list-tasks --region $r --output json --cluster $c --no-cli-pager 2>&1)
+    if [[ $VERBOSE == "true" ]]
+    then
+      verbose "  Output: $list_output"
+    fi
+    local jq_list_output
+    jq_list_output=$(echo "$list_output" | jq -r '.taskArns | join(" ")' 2>&1)
+    local jq_exit_code=$?
+    if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+    then
+      verbose "  Error parsing list-tasks output with jq: $jq_list_output"
+      jq_list_output=""
+    fi
+    allclustertasks="$jq_list_output"
     while read -r batch; do
       if [ -n "${batch}" ]; then
-        fargaterunningtasks=$(aws $profile_string ecs describe-tasks --region $r --output json --tasks $batch --cluster $c --no-cli-pager 2>&1 | jq '[.tasks[] | select(.launchType=="FARGATE") | select(.lastStatus=="RUNNING")] | length')
-        RUNNING_FARGATE_TASKS=$(($RUNNING_FARGATE_TASKS + $fargaterunningtasks))
+        local cmd="aws $profile_string ecs describe-tasks --region $r --output json --tasks $batch --cluster $c --no-cli-pager"
+        verbose "  Command: $cmd"
+        local describe_output=$(aws $profile_string ecs describe-tasks --region $r --output json --tasks $batch --cluster $c --no-cli-pager 2>&1)
+        if [[ $VERBOSE == "true" ]]
+        then
+          verbose "  Output: $describe_output"
+        fi
+        local jq_result
+        jq_result=$(echo "$describe_output" | jq '[.tasks[] | select(.launchType=="FARGATE") | select(.lastStatus=="RUNNING")] | length' 2>&1)
+        local jq_exit_code=$?
+        if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+        then
+          verbose "  Error parsing describe-tasks output with jq: $jq_result"
+          jq_result=0
+        fi
+        RUNNING_FARGATE_TASKS=$(($RUNNING_FARGATE_TASKS + $jq_result))
       fi
     done < <(echo $allclustertasks | xargs -n 90)
   done
@@ -321,10 +382,40 @@ function getECSFargateRunningCPUs {
   local RUNNING_FARGATE_CPUS=0
   verbose "Calculating ECS Fargate CPU units in region $r"
   for c in $ecsfargateclusters; do
-    allclustertasks=$(aws $profile_string ecs list-tasks --region $r --output json --cluster $c --no-cli-pager 2>&1 | jq -r '.taskArns | join(" ")')
+    local cmd="aws $profile_string ecs list-tasks --region $r --output json --cluster $c --no-cli-pager"
+    verbose "  Command: $cmd"
+    local list_output=$(aws $profile_string ecs list-tasks --region $r --output json --cluster $c --no-cli-pager 2>&1)
+    if [[ $VERBOSE == "true" ]]
+    then
+      verbose "  Output: $list_output"
+    fi
+    local jq_list_output
+    jq_list_output=$(echo "$list_output" | jq -r '.taskArns | join(" ")' 2>&1)
+    local jq_exit_code=$?
+    if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+    then
+      verbose "  Error parsing list-tasks output with jq: $jq_list_output"
+      jq_list_output=""
+    fi
+    allclustertasks="$jq_list_output"
     while read -r batch; do
       if [ -n "${batch}" ]; then
-        cpucounts=$(aws $profile_string ecs describe-tasks --region $r --output json --tasks $batch --cluster $c --no-cli-pager 2>&1 | jq '[.tasks[] | select(.launchType=="FARGATE") | select(.lastStatus=="RUNNING")] | .[].cpu | tonumber')
+        local cmd="aws $profile_string ecs describe-tasks --region $r --output json --tasks $batch --cluster $c --no-cli-pager"
+        verbose "  Command: $cmd"
+        local describe_output=$(aws $profile_string ecs describe-tasks --region $r --output json --tasks $batch --cluster $c --no-cli-pager 2>&1)
+        if [[ $VERBOSE == "true" ]]
+        then
+          verbose "  Output: $describe_output"
+        fi
+        local jq_result
+        jq_result=$(echo "$describe_output" | jq '[.tasks[] | select(.launchType=="FARGATE") | select(.lastStatus=="RUNNING")] | .[].cpu | tonumber' 2>&1)
+        local jq_exit_code=$?
+        if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+        then
+          verbose "  Error parsing describe-tasks CPU output with jq: $jq_result"
+          jq_result=""
+        fi
+        cpucounts="$jq_result"
 
         for cpucount in $cpucounts; do
           RUNNING_FARGATE_CPUS=$(($RUNNING_FARGATE_CPUS + $cpucount))
@@ -347,6 +438,7 @@ function getLambdaFunctions {
   if [[ $VERBOSE == "true" ]]
   then
     local result=$(aws $profile_string lambda list-functions --region $r --output json --no-cli-pager 2>&1)
+    verbose "Output: $result"
     if [[ $result = {* ]]
     then
       local count=$(echo "$result" | jq '.Functions | length' 2>/dev/null)
@@ -405,12 +497,20 @@ function calculateInventory {
     then
       printf " $r"
     fi
+    # Add newline to stderr in verbose mode to separate from CSV output on same line
+    if [[ $VERBOSE == "true" && $PRINT_CSV_DETAILS == "true" ]]
+    then
+      echo "" >&2
+    fi
 
     instances=$(getEC2Instances "$profile_string" "$r")
     if [[ $instances < 0 ]]
     then
-      verbose "WARNING: Could not access EC2 in region $r"
-      printf " (ERROR: No access to $r)"
+      verbose "WARNING: Could not access EC2 in region $r - see error output above"
+      if [[ $PRINT_CSV_DETAILS == "true" ]]
+      then
+        printf " (ERROR: No access to $r)"
+      fi
     else
       EC2_INSTANCES=$(($EC2_INSTANCES + $instances))
       accountEC2Instances=$(($accountEC2Instances + $instances))
@@ -485,7 +585,20 @@ function textoutput {
 function analyzeOrganization {
     local org_profile_string=$1
     local orgAccountId=$(getAccountId "$org_profile_string")
-    local accounts=$(aws $org_profile_string organizations list-accounts | jq -c '.Accounts[]' | jq -c '{Id, Name}')
+    local cmd="aws $org_profile_string organizations list-accounts"
+    verbose "Command: $cmd"
+    verbose "Calling organizations list-accounts..."
+    local accounts_output
+    if ! accounts_output=$(aws $org_profile_string organizations list-accounts 2>&1); then
+        echo "Error: Failed to list accounts in organization: $accounts_output" >&2
+        echo "Make sure you have permissions to call organizations:ListAccounts and that you're running this from the organization master account." >&2
+        return 1
+    fi
+    if [[ $VERBOSE == "true" ]]
+    then
+      verbose "Output: $accounts_output"
+    fi
+    local accounts=$(echo "$accounts_output" | jq -c '.Accounts[]' | jq -c '{Id, Name}')
     if [ -n "$ORG_SCAN_ACCOUNT" ]
     then
       local account_name=$(echo $accounts | jq -r --arg account "$ORG_SCAN_ACCOUNT" 'select(.Id==$account) | .Name')
@@ -517,6 +630,10 @@ function analyzeOrganizationAccount {
   local cmd="aws $org_profile_string sts assume-role --role-session-name LW-INVENTORY --role-arn $role_arn"
   verbose "Command: $cmd"
   local account_credentials=$(aws $org_profile_string sts assume-role --role-session-name LW-INVENTORY --role-arn $role_arn 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $account_credentials"
+  fi
   if [[ $account_credentials = {* ]] 
   then
     #Got ok credential back, do analysis
@@ -569,15 +686,15 @@ function runAnalysis {
 
   if [ -n "$ORG_ACCESS_ROLE" ]
   then
-      for PROFILE in $(echo $AWS_PROFILE | sed "s/,/ /g")
-      do
-          ORGANIZATIONS=$(($ORGANIZATIONS + 1))
-          PROFILE_STRING="--profile $PROFILE"
-          analyzeOrganization "$PROFILE_STRING"
-      done
-
-      if [ -z "$PROFILE" ]
+      if [ -n "$AWS_PROFILE" ]
       then
+          for PROFILE in $(echo $AWS_PROFILE | sed "s/,/ /g")
+          do
+              ORGANIZATIONS=$(($ORGANIZATIONS + 1))
+              PROFILE_STRING="--profile $PROFILE"
+              analyzeOrganization "$PROFILE_STRING"
+          done
+      else
           ORGANIZATIONS=1
           analyzeOrganization ""
       fi
