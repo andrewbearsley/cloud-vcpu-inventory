@@ -110,12 +110,28 @@ function analyzeProject {
   local cmd="gcloud compute instances list --project $project --quiet --format=json"
   verbose "Command: $cmd"
   local instanceList=$(gcloud compute instances list --project $project --quiet --format=json 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $instanceList"
+  fi
   if [[ $instanceList = [* ]] 
   then
     verbose "Successfully retrieved instance list"
-    local instanceCount=$(echo $instanceList | jq 'length')
+    local instanceCount=$(echo "$instanceList" | jq 'length' 2>&1)
+    local jq_exit_code=$?
+    if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+    then
+      verbose "Error parsing instance list with jq: $instanceCount"
+      instanceCount=0
+    fi
     verbose "Found $instanceCount total instances (including terminated)"
-    local instanceMap=$(echo $instanceList | jq -r '.[] | select(.status != ("TERMINATED")) | .machineType' | sort | uniq -c)
+    local jq_machines=$(echo "$instanceList" | jq -r '.[] | select(.status != ("TERMINATED")) | .machineType' 2>&1)
+    local jq_machines_exit_code=$?
+    if [[ $VERBOSE == "true" && $jq_machines_exit_code -ne 0 ]]
+    then
+      verbose "Error extracting machine types with jq: $jq_machines"
+    fi
+    local instanceMap=$(echo "$jq_machines" | sort | uniq -c)
     verbose "Processing machine types:"
     # make the for loop split on newline vs. space
     IFS=$'\n' 
@@ -131,7 +147,18 @@ function analyzeProject {
       verbose "  Processing $count instances of type $machineType in zone $location"
       local cmd="gcloud compute machine-types describe $machineType --zone=$location --project=$project --format=json"
       verbose "  Command: $cmd"
-      local typeVCPUValue=$(gcloud compute machine-types describe $machineType --zone=$location --project=$project --format=json | jq -r '.guestCpus') # get vCPU for machine type
+      local machineTypeOutput=$(gcloud compute machine-types describe $machineType --zone=$location --project=$project --format=json 2>&1)
+      if [[ $VERBOSE == "true" ]]
+      then
+        verbose "  Output: $machineTypeOutput"
+      fi
+      local typeVCPUValue=$(echo "$machineTypeOutput" | jq -r '.guestCpus' 2>&1)
+      local jq_exit_code=$?
+      if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+      then
+        verbose "  Error parsing machine type output with jq: $typeVCPUValue"
+        typeVCPUValue=0
+      fi
       verbose "  Machine type $machineType has $typeVCPUValue vCPUs (count: $count, subtotal: $(($count * $typeVCPUValue)) vCPUs)"
 
       projectVCPUs=$(($projectVCPUs + (($count * $typeVCPUValue)))) # increment total count, including Standard GKE
@@ -164,7 +191,17 @@ function analyzeFolder {
   verbose "Getting subfolders..."
   local cmd="gcloud resource-manager folders list --folder $folder --format=json"
   verbose "Command: $cmd"
-  local folders=$(gcloud resource-manager folders list --folder $folder --format=json | jq -r '.[] | .name' | sed 's/.*\///')
+  local foldersOutput=$(gcloud resource-manager folders list --folder $folder --format=json 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $foldersOutput"
+  fi
+  local folders=$(echo "$foldersOutput" | jq -r '.[] | .name' 2>&1 | sed 's/.*\///')
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error parsing folders output with jq: $folders"
+  fi
   local folderCount=$(echo "$folders" | grep -v '^$' | wc -l | xargs)
   verbose "Found $folderCount subfolder(s)"
   for f in $folders;
@@ -175,7 +212,17 @@ function analyzeFolder {
   verbose "Getting projects in folder $folder..."
   local cmd="gcloud projects list --format=json --filter=\"parent.id=$folder AND parent.type=folder\""
   verbose "Command: $cmd"
-  local projects=$(gcloud projects list --format=json --filter="parent.id=$folder AND parent.type=folder" | jq -r '.[] | .projectId')
+  local projectsOutput=$(gcloud projects list --format=json --filter="parent.id=$folder AND parent.type=folder" 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $projectsOutput"
+  fi
+  local projects=$(echo "$projectsOutput" | jq -r '.[] | .projectId' 2>&1)
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error parsing projects output with jq: $projects"
+  fi
   local projectCount=$(echo "$projects" | grep -v '^$' | wc -l | xargs)
   verbose "Found $projectCount project(s) in folder $folder"
   for project in $projects;
@@ -195,7 +242,17 @@ function analyzeOrganization {
   verbose "Getting folders in organization..."
   local cmd="gcloud resource-manager folders list --organization $organization --format=json"
   verbose "Command: $cmd"
-  local folders=$(gcloud resource-manager folders list --organization $organization --format=json | jq -r '.[] | .name' | sed 's/.*\///')
+  local foldersOutput=$(gcloud resource-manager folders list --organization $organization --format=json 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $foldersOutput"
+  fi
+  local folders=$(echo "$foldersOutput" | jq -r '.[] | .name' 2>&1 | sed 's/.*\///')
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error parsing folders output with jq: $folders"
+  fi
   local folderCount=$(echo "$folders" | grep -v '^$' | wc -l | xargs)
   verbose "Found $folderCount folder(s) in organization"
   for f in $folders;
@@ -206,7 +263,17 @@ function analyzeOrganization {
   verbose "Getting projects directly under organization..."
   local cmd="gcloud projects list --format=json --filter=\"parent.id=$organization AND parent.type=organization\""
   verbose "Command: $cmd"
-  local projects=$(gcloud projects list --format=json --filter="parent.id=$organization AND parent.type=organization" | jq -r '.[] | .projectId')
+  local projectsOutput=$(gcloud projects list --format=json --filter="parent.id=$organization AND parent.type=organization" 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $projectsOutput"
+  fi
+  local projects=$(echo "$projectsOutput" | jq -r '.[] | .projectId' 2>&1)
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error parsing projects output with jq: $projects"
+  fi
   local projectCount=$(echo "$projects" | grep -v '^$' | wc -l | xargs)
   verbose "Found $projectCount project(s) directly under organization"
   for project in $projects;
@@ -262,7 +329,17 @@ else
   verbose "No specific scope specified, retrieving all accessible projects..."
   cmd="gcloud projects list --format json"
   verbose "Command: $cmd"
-  foundProjects=$(gcloud projects list --format json | jq -r ".[] | .projectId")
+  local projectsOutput=$(gcloud projects list --format json 2>&1)
+  if [[ $VERBOSE == "true" ]]
+  then
+    verbose "Output: $projectsOutput"
+  fi
+  foundProjects=$(echo "$projectsOutput" | jq -r ".[] | .projectId" 2>&1)
+  local jq_exit_code=$?
+  if [[ $VERBOSE == "true" && $jq_exit_code -ne 0 ]]
+  then
+    verbose "Error parsing projects list output with jq: $foundProjects"
+  fi
   projectCount=$(echo "$foundProjects" | grep -v '^$' | wc -l | xargs)
   verbose "Found $projectCount accessible project(s)"
   for foundProject in $foundProjects;
